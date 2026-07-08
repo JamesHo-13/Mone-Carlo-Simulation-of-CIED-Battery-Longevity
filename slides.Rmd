@@ -1,0 +1,294 @@
+---
+title: "<span style='color:#1E4D2B;'>Monte Carlo Simulation of CIED Longevity</span>"
+author: 'Group 4: Sydney, James, Waddah'
+subtitle: '<span style=''color:#C8C372;''>STAT 400: Computational Statistics — Colorado
+  State University</span>'
+output:
+  beamer_presentation: default
+  ioslides_presentation:
+    css: styles.css
+  slidy_presentation: default
+---
+
+
+```{r setup, include=FALSE}
+library(tidyverse)     
+library(ggplot2)
+library(knitr)         
+
+set.seed(400) 
+
+n_patients <- 100000
+
+condition <- sample(c("SND", "AVB"), n_patients, replace = TRUE, prob = c(0.6, 0.4))
+hr <- pmin(pmax(rnorm(n_patients, 60, 5), 40), 90)
+
+ventricular_pacing <- ifelse(condition == "SND",
+                            rnorm(n_patients, 0.29, 0.08),
+                            rnorm(n_patients, 0.90, 0.05))
+ventricular_pacing <- pmin(pmax(ventricular_pacing, 0), 1)
+
+c_mah <- pmax(rnorm(n_patients, 1000, 80), 800)
+i_background <- pmax(rnorm(n_patients, 6.5, 0.7), 4)
+i_options <- rep(0, n_patients)
+
+sim_data <- tibble(
+  id = 1:n_patients,
+  condition,
+  hr,
+  ventricular_pacing,
+  c_mah,
+  i_background,
+  i_options
+)
+
+p_current <- function(v, pw_ms, r_ohm, hr = 60, pace_fraction = 0.3){
+  pw_sec <- pw_ms / 1000
+  i_pulse <- v / r_ohm
+  q <- i_pulse * pw_sec
+  q_micro <- q * 1e6
+  i_avg_microamps <- (q_micro * hr * pace_fraction) / 60
+  return(i_avg_microamps)
+}
+
+sim_base <- sim_data %>%
+  mutate(
+    impedance = 500,
+    i_pacing = p_current(2.5, 0.4, impedance, hr, ventricular_pacing),
+    i_total = i_background + i_pacing + i_options,
+    PCI = i_total / (c_mah * 1000),
+    long_years = 1 / PCI / 8760,
+    scenario = "Base (500 Ohms)"
+  )
+
+sim_extended <- sim_data %>%
+  mutate(
+    impedance = pmax(rnorm(n_patients, 500, 100), 200),
+    i_pacing = p_current(2.5, 0.4, impedance, hr, ventricular_pacing),
+    i_total = i_background + i_pacing + i_options,
+    PCI = i_total / (c_mah * 1000),
+    long_years = 1 / PCI / 8760,
+    scenario = "Extended (500 Ohms ± 100 Ohms)"
+  )
+
+results <- bind_rows(
+  select(sim_base, id, condition, long_years, scenario),
+  select(sim_extended, id, condition, long_years, scenario)
+)
+
+summary_tbl <- results %>%
+  group_by(scenario) %>%
+  summarise(
+    mean_years = mean(long_years),
+    median_years = median(long_years),
+    sd_years = sd(long_years),
+    q1 = quantile(long_years, 0.25),
+    q3 = quantile(long_years, 0.75),
+    n = n()
+  )
+
+t_test_result <- t.test(
+  filter(results, scenario == "Base (500 Ohms)")$long_years,
+  filter(results, scenario == "Extended (500 Ohms ± 100 Ohms)")$long_years
+)
+
+mean_diff <- summary_tbl$mean_years[1] - summary_tbl$mean_years[2]
+days_diff <- round(mean_diff * 365)
+
+```
+
+## Motivation 
+
+* CIED (pacemaker) batteries require surgical replacement.
+
+* Longevity prediction helps avoid too-early or too-late replacement.
+
+* Lead impedance affects pacing current → may affect battery life.
+
+* We use a Monte Carlo simulation to test whether impedance variability changes predicted longevity.
+
+
+## Simulation Inputs 
+
+* 100,000 simulated patients.
+
+* Variables included: heart rate, pacing %, battery capacity, background current, impedance.
+
+* Two impedance conditions:
+
+  * **Base:** fixed at 500 Ohms *(following Defaye et al., 2025)*
+
+  * **Extended:** N(500 Ohms, SD = 100 Ohms) *(our extension)*
+  
+* Purpose: isolate the effect of impedance variability.
+
+## Problem Statement & Methodology 
+
+* **Question:** Does impedance variability meaningfully change predicted longevity?
+* **Steps:**
+  1. Implement PCI model.
+  2. Simulate patient and device parameters.
+  3. Compute longevity under both impedance scenarios.
+  4. Compare means and distributions.
+
+## PCI Model: Concept Overview 
+
+* PCI = electrical load relative to battery capacity.
+* Lower impedance → more current → shorter longevity.
+* Components:
+
+  * Pacing current
+  * Background/system current
+  * Optional features current
+
+## PCI Model: Pacing Current Formula 
+
+```{r}
+p_current <- function(v, pw_ms, r_ohm, hr = 60, 
+                      pace_fraction = 0.3){
+  # Convert Pulse width to seconds
+  pw_sec  <- pw_ms / 1000
+  
+  # Current during pulse
+  i_pulse <- v / r_ohm
+  
+  # Charge per pulse in Coulombs
+  q       <- i_pulse * pw_sec
+  
+  # Convert to microcoulombs
+  q_micro <- q * 1e6
+  
+  # Average current over 1 minute
+  i_avg_microamps <- (q_micro * hr * pace_fraction)/60
+  return(i_avg_microamps)
+}
+```
+
+## PCI Model: Longevity Formula 
+
+```{r}
+long <- function(i_background, i_pacing, 
+                 i_options, c_mah){
+  # Convert battery capacity from mAh to µAh
+  c_uah      <- c_mah * 1000
+  # Total current in µA
+  i_total    <- i_background + i_pacing + 
+    i_options
+  # Power Consumption Index (PCI)
+  PCI        <- i_total / c_uah
+  # Longevity in hours
+  long_hours <- 1 / PCI
+  # Longevity in years
+  long_hours / 8760
+  return(list(
+    i_total = i_total,
+    PCI = PCI,
+    years = long_years))
+  }
+```
+
+## Monte Carlo Framework (How We Tested) 
+
+
+**For each of 100,000 patients:**
+
+1. Calculate longevity with perfect 500 Ohms impedance
+
+2. Calculate longevity with realistic variable impedance
+
+3. Compare the two results
+
+
+**This isolates** the effect of impedance variability by controlling for other patient differences
+
+
+## Longevity Summary Table 
+
+```{r, echo=FALSE}
+summary_display <- summary_tbl %>%
+  mutate(
+    n = format(n, big.mark = ",", scientific = FALSE)  
+  ) %>%
+  rename(
+    Scenario = scenario,
+    Mean = mean_years,
+    Median = median_years,
+    SD = sd_years,
+    Q1 = q1,
+    Q3 = q3,
+    N = n
+  )
+
+kable(summary_display, 
+      digits = 2,
+      align = c('l', rep('c', 6)))
+```
+
+* Longevity slightly lower under impedance variability.
+* Differences are small. 
+
+## T-Test Results 
+
+```{r, echo=FALSE}
+cat("Welch Two Sample t-test\n\n")
+cat("t =", round(t_test_result$statistic, 2), "\n")
+cat("p-value =", format(t_test_result$p.value, scientific = TRUE, digits = 2), "\n\n")
+cat("95% CI:", round(t_test_result$conf.int[1], 3), "to", round(t_test_result$conf.int[2], 3), "years\n")
+cat("Mean(Base)     =", round(t_test_result$estimate[1], 2), "\n")
+cat("Mean(Extended) =", round(t_test_result$estimate[2], 2), "\n")
+cat("\nStatistical significance due to large n (", format(n_patients, big.mark = ",", scientific = FALSE), ")", sep = "")
+
+```
+
+
+## Longevity Distribution Plot
+
+```{r, echo=FALSE, fig.height=3.5, fig.width=8}
+ggplot(results, aes(x = long_years, fill = scenario)) +
+  geom_density(alpha = 0.6) +
+  scale_fill_manual(values = c("blue", "gold")) +
+  labs(
+    title = "CIED Longevity: Base vs Extended Impedance",
+    x = "Longevity (years)",
+    y = "Density",
+    fill = "Scenario"
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(
+    plot.title = element_text(color = "darkblue", face = "bold"),
+    plot.subtitle = element_text(color = "gray40", size = 12),
+    axis.title = element_text(color = "black")
+  )
+
+```
+  
+  - Strong overlap → impedance variability has small effect.
+  - Statistical significance (p < 0.001) reflects 0.07 year mean difference.
+  - Slight separation aligns with statistical findings.
+  - Same distribution shape → consistent prediction patterns.
+
+
+
+## Discussion 
+
+* Background/system current has strongest influence on longevity.
+* Impedance variability causes small, statistically detectable but clinically minimal changes (~25 days over 15+ years).
+* Pacing burden + background current dominate longevity outcomes.
+
+## Limitations & Future Work 
+
+* Impedance treated as static (real devices drift).
+* Model excludes multi-lead systems and adaptive algorithms.
+* Could expand with dynamic impedance or clinical validation.
+
+
+## Conclusion 
+
+* Impedance variability slightly reduces longevity.
+* Predictions remain stable across realistic impedance ranges.
+* Monte Carlo simulation provides strong framework for CIED evaluation.
+
+## Thank You
+
+**Questions?**
+

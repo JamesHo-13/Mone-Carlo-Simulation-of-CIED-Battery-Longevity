@@ -1,0 +1,384 @@
+---
+title: 'STAT 400 | Group 4 | Monte Carlo Simulation: CIED Longevity'
+author: "Sydney Coughlan, James Ho, Waddah Alqahtani"
+output:
+  pdf_document: default
+  html_document: default
+header-includes:
+  - \usepackage{float}  
+---
+
+
+```{r setup, include=FALSE}
+library(tidyverse)     
+library(knitr)         
+library(kableExtra)    
+
+set.seed(400) 
+
+```
+
+
+## Article 
+
+Cardiac implantable electronic devices’ longevity: A novel modelling tool for estimation and comparison  
+
+## Project Overview
+
+### Introduction
+
+This project replicates and extends the Monte Carlo simulation from Defaye et al. (2025) on Cardiac Implantable Electronic Device (CIED) longevity. The original study introduced a Power Consumption Index (PCI) model to standardize battery life predictions across different pacemaker models and manufacturers.
+
+### Research Goals
+1. Replicate the PCI model and Monte Carlo simulation methodology
+
+2. Extend the model by incorporating greater physiological variability in lead impedance
+
+3. Compare device longevity predictions under base and extended scenarios
+
+### Power Consumption Index Model
+
+**Model Definition**
+
+The core PCI model from the original study is defined as:
+
+**PCI** = t × I / C
+
+Where:
+
+
+**t** = Time in minutes
+
+**I** = Total current drain (µA)
+
+**C** = Battery capacity (Ah)
+
+### Methods: 
+
+**Core Goal:** Test impedance variability effect on PCI predictions
+
+**Simplified Patient Model:**
+- 100,000 virtual patients
+- Condition (SND/AVB), HR, ventricular pacing only
+- Battery, background current, lead impedance
+
+**Intentional Simplifications:**
+- Excluded atrial parameters to focus on ventricular pacing
+- Set optional features to zero for clarity
+- Used single impedance value (not manufacturer-specific)
+
+**Rationale:** Isolate effect of impedance variability while maintaining model essence
+
+**Comparison:** Base (500 Ohms fixed) vs Extended (N(500,100) Ohms) vs High-impedance scenario (1000 Ohms fixed)
+
+
+### PCI Model
+
+To recreate the PCI Model we will need to create the pacing current function and the longevity function. For the pacing current function, we will take the input: voltage, pulse in millisecond, the resistant in ohms, hours, and the pacing fraction. To start the function, we will convert the pulse from millisecond to seconds. Then find the current during the pulse and convert it into coulombs. After that we then find the average current over one minute and return it.
+
+After creating the pacing current function, we then need to create the longevity function. We will take the input: the background current, the pacing current from our last function, the options current, and the capacity of the battery in milliampere-hour. First we will need to convert the battery capacity from milliampere-hour to microampere-hour. From there we then find the total current by adding background current, pacing current and option current. Then we get the PCI dividing the total current by the battery capacity. After getting the PCI we then find the longevity in hours by dividing one by the PCI. Finally we divide the longevity in hours by 8760 to get the longevity in years. After getting that we then return a list of total current, PCI, and longevity in years.
+
+```{r, echo=FALSE}
+
+#Pacing Current Function
+i_pacing <- function(v, pw_ms, r_ohm, hr = 60, 
+                      pace_fraction = 0.3){
+  # Convert Pulse width to seconds
+  pw_sec  <- pw_ms / 1000
+  
+  # Current during pulse
+  i_pulse <- v / r_ohm
+  
+  # Charge per pulse in Coulombs
+  q       <- i_pulse * pw_sec
+  
+  # Convert to microcoulombs
+  q_micro <- q * 1e6
+  
+  # Average current over 1 minute
+  i_avg_microamps <- (q_micro * hr * pace_fraction)/60
+  return(i_avg_microamps)
+}
+
+#PCI + Longevity Function
+long <- function(i_background, i_pacing, 
+                 i_options, c_mah){
+  # Convert battery capacity from mAh to µAh
+  c_uah      <- c_mah * 1000
+  # Total current in µA
+  i_total    <- i_background + i_pacing + 
+    i_options
+  # Power Consumption Index (PCI)
+  PCI        <- i_total / c_uah
+  # Longevity in hours
+  long_hours <- 1 / PCI
+  # Longevity in years
+  long_years <- long_hours / 8760
+  return(list(
+    i_total = i_total,
+    PCI = PCI,
+    years = long_years))
+  }
+
+```
+
+
+
+
+### Monte Carlo Simulation Implementation
+
+This section outlines the step-by-step computational process used to generate and analyze the virtual patient cohort. Patient-specific parameters were randomly sampled from defined distributions: condition (SND or AVB), heart rate (normally distributed with mean 60 bpm, SD 5 bpm), and ventricular pacing percentage (condition-dependent normal distributions). Device parameters included battery capacity and background current, both sampled from normal distributions with clinically plausible bounds. The simulation then calculated pacing current using a derived function incorporating voltage, pulse width, impedance, heart rate, and pacing fraction. Total current, PCI, and device longevity were computed for each patient across all three impedance scenarios. This systematic approach ensures transparency and reproducibility of the simulation methodology.
+
+#### Results
+
+* **Simulation Summary**
+
+The Monte Carlo simulation generated longevity predictions for 100,000 virtual patients across three distinct impedance scenarios. Patient characteristics and device parameters were randomly sampled from clinically plausible distributions. Patients were assigned either sinus node dysfunction (SND, 60%) or atrioventricular block (AVB, 40%) conditions, with corresponding ventricular pacing percentages of 29% (±8%) for SND and 90% (±5%) for AVB. Device parameters included battery capacity (mean 1000 mAh, SD 80 mAh) and background current (mean 6.5 µA, SD 0.7 µA).
+
+
+```{r echo=FALSE}
+
+#### 1) Simulation
+
+set.seed(400)
+n_patients <- 100000
+
+# Patient condition (indication)
+condition <- sample(c("SND", "AVB"), n_patients, replace = TRUE, prob = c(0.6, 0.4))
+hr <- pmin(pmax(rnorm(n_patients, 60, 5), 40), 90)
+
+# Pacing percentages (as fractions 0-1)
+ventricular_pacing <- ifelse(condition == "SND",
+                            rnorm(n_patients, 0.29, 0.08),   # 29% ± 8% for SND
+                            rnorm(n_patients, 0.90, 0.05))   # 90% ± 5% for AVB
+ventricular_pacing <- pmin(pmax(ventricular_pacing, 0), 1)  # Clamp to 0-1
+
+# Device parameters
+c_mah <- pmax(rnorm(n_patients, 1000, 80), 800)        # Battery capacity
+i_background <- pmax(rnorm(n_patients, 6.5, 0.7), 4)   # Background current
+
+# Options current 
+i_options <- rep(0, n_patients)  # Set to 0 to simplify
+
+# Create patient data
+sim_data <- tibble(
+  id = 1:n_patients,
+  condition,
+  hr,
+  ventricular_pacing,
+  c_mah,
+  i_background,
+  i_options
+)
+
+
+```
+
+
+```{r echo=FALSE}
+
+#### 2) Base scenario (fixed impedance = 500 Ohms)
+
+
+sim_base <- sim_data %>%
+  mutate(
+    impedance = 500,
+    i_pacing = i_pacing(2.5, 0.4, impedance, hr, ventricular_pacing),
+    i_total = i_background + i_pacing + i_options,
+    PCI = i_total / (c_mah * 1000),
+    long_years = 1 / PCI / 8760,
+    scenario = "Base (500 Ohms)"
+  )
+
+```
+
+
+```{r echo=FALSE}
+
+#### 3.1) Extended scenario (variable lead impedance)
+
+sim_extended <- sim_data %>%
+  mutate(
+    impedance = pmax(rnorm(n_patients, 500, 100), 200),
+    i_pacing = i_pacing(2.5, 0.4, impedance, hr, ventricular_pacing),
+    i_total = i_background + i_pacing + i_options,
+    PCI = i_total / (c_mah * 1000),
+    long_years = 1 / PCI / 8760,
+    scenario = "Extended (500 Ohms ± 100 Ohms)"
+  )
+
+```
+
+
+```{r echo=FALSE}
+
+#### 3.2) 1000 Ohms scenario
+
+sim_high_imp <- sim_data %>%
+  mutate(
+    impedance = 1000,
+    i_pacing = i_pacing(2.5, 0.4, impedance, hr, ventricular_pacing),
+    i_total = i_background + i_pacing + i_options,
+    PCI = i_total / (c_mah * 1000),
+    long_years = 1 / PCI / 8760,
+    scenario = "High (1000 Ohms)"
+  )
+```
+
+
+* **Longevity by Impedance Scenario**
+
+*Table 1* presents the descriptive statistics for device longevity under each impedance condition. The high-impedance scenario (1000 Ohms) showed the longest mean longevity at 16.43 years, followed by the base scenario (500 Ohms) at 15.33 years, and the extended scenario (500 ± 100 Ohms) at 15.26 years.
+
+
+
+
+```{r echo=FALSE}
+
+#### 4) Summarize longevity distributions (table)
+
+results <- bind_rows(
+  select(sim_base, id, condition, long_years, scenario),
+  select(sim_extended, id, condition, long_years, scenario),
+  select(sim_high_imp, id, condition, long_years, scenario)
+
+)
+
+results$scenario <- factor(results$scenario,
+  levels = c("Base (500 Ohms)", 
+             "Extended (500 Ohms ± 100 Ohms)", 
+             "High (1000 Ohms)"))
+
+
+summary_tbl <- results %>%
+  group_by(scenario) %>%
+  summarise(
+    mean_years = mean(long_years),
+    median_years = median(long_years),
+    sd_years = sd(long_years),
+    q1 = quantile(long_years, 0.25),
+    q3 = quantile(long_years, 0.75),
+    n = n()
+  )
+
+# Summary table
+summary_display <- summary_tbl %>%
+  mutate(
+    n = format(n, big.mark = ",", scientific = FALSE)  
+  ) %>%
+  rename(
+    Scenario = scenario,
+    Mean = mean_years,
+    Median = median_years,
+    SD = sd_years,
+    Q1 = q1,
+    Q3 = q3,
+    N = n
+  )
+
+kable(summary_display, 
+      digits = 2,
+      align = c('l', rep('c', 6)))
+
+```
+
+
+* **Statistical Comparisons**
+
+Welch two-sample t-tests were conducted to compare longevity between the base scenario and each alternative scenario:
+
+
+```{r echo=FALSE}
+
+#### 5) Statistical test (t-test) to confirm significance
+
+t_test_result <- t.test(
+  filter(results, scenario == "Base (500 Ohms)")$long_years,
+  filter(results, scenario == "Extended (500 Ohms ± 100 Ohms)")$long_years
+)
+
+t_test_high <- t.test(
+  filter(results, scenario == "Base (500 Ohms)")$long_years,
+  filter(results, scenario == "High (1000 Ohms)")$long_years
+)
+
+cat("**T-test Results:**\n\n")
+cat("Base vs Extended (±100 Ohms):\n")
+cat(sprintf("  t(%.0f) = %.2f, p = %.2e\n", 
+            t_test_result$parameter, t_test_result$statistic, t_test_result$p.value))
+cat(sprintf("  Mean difference = %.3f years\n\n", diff(t_test_result$estimate)))
+
+cat("Base vs High (1000 Ohms):\n")
+cat(sprintf("  t(%.0f) = %.2f, p < 2.2e-16\n", 
+            t_test_high$parameter, t_test_high$statistic))
+cat(sprintf("  Mean difference = %.3f years", diff(t_test_high$estimate)))
+```
+
+Both comparisons were statistically significant (p < 0.001). The difference between the base and extended scenarios, though significant, represents a minimal practical effect. In contrast, the high-impedance scenario showed a substantial and clinically meaningful increase in predicted longevity.
+
+
+* **Visual Distribution**
+*Figure 1* illustrates the density distributions of predicted longevity across the three impedance scenarios.
+
+
+```{r echo=FALSE, fig.align='left', out.width='80%', fig.pos='H'}
+
+#### 6) Plot longevity distributions 
+
+ggplot(results, aes(x = long_years, fill = scenario)) +
+  geom_density(alpha = 0.5) +
+  scale_fill_manual(values = c("#3F51B5", "#FF9800", "#388E3C")) +
+  labs(
+    title = "CIED LONGEVITY: IMPEDANCE EFFECT",
+    x = "Longevity (years)",
+    y = "Density"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(size = 14, face = "bold.italic", hjust = 0.5,
+                              margin = margin(b = 15)),  # BOLD.ITALIC
+    legend.position = "bottom",
+    legend.text = element_text(size = 9),
+    plot.margin = margin(15, 15, 10, 15)
+  ) +
+  guides(fill = guide_legend(nrow = 1, title = NULL))
+
+
+```
+
+The density plot confirms the statistical findings. The high-impedance (1000 Ohms) distribution is clearly shifted to the right, indicating increased device lifespan. The base and extended scenarios show considerable overlap, reflecting the minimal practical impact of normal physiological impedance variability (±100 Ohms).
+
+
+
+### DISCUSSION  
+
+The goal of our project was to recreate the central modeling approach described in Defaye et al. (2025), which introduced the Power Consumption Index (PCI) as a standardized way for comparing cardiac implantable electronic device longevity. The original study relied on detailed manufacturer-reported current drain data to build the model, followed by a large-scale Monte Carlo Simulation of 100,000 patients. For our recreation, we reproduced the key steps in the study by generating 100,000 virtual patients with randomized physiological and device parameters, including heart rate, pacing percentages, battery capacity, background current, and lead impedance. Using these inputs, we calculated pacing current, total device current, PCI, and predicted device longevity.
+
+Overall, we observed the following points that aligned with the original study:
+
+#### 1. The background current dominates the total power consumption
+In our simulation, patients with low pacing percentages had longevity largely determined by background current. Across all scenarios, the mean background current was approximately 6.5 µA, while mean pacing-related current ranged from ~1.5 to 2.5 µA depending on pacing burden and impedance. Consequently, background current accounted for approximately 70–80% of the total current drain in the majority of simulated patients. As a result, variations in pacing parameters had a limited impact on longevity when background current remained constant. In the original study, the majority of the PCI is driven by the background current, so our recreation aligned closely with this finding.
+
+#### 2. The pacing burden substantially influences longevity
+Our simulation shows that higher ventricular pacing percentages had higher total current and lower projected longevity. When grouping patients by condition, those with AV block (AVB) (mean ventricular pacing ~90%) exhibited a mean projected longevity that was approximately 2–3 years shorter than patients with sinus node dysfunction (SND) (mean ventricular pacing ~30%), under otherwise similar device parameters. This aligns with the original study, where pacing current was the second-largest contributor to power consumption. 
+
+#### 3. The battery capacity alone cannot predict longevity
+Devices with higher battery capacity generally exhibited longer simulated service life. However, battery capacity alone did not uniquely determine longevity. In the simulated population, patients with similar battery capacities (e.g., ~1000 Ah) demonstrated multi-year differences in projected longevity driven by differences in total current drain from background and pacing components. This demonstrates that battery size alone does not fully determine expected device lifespan, consistent with the findings of the original study.
+
+#### 4. Lead impedance variability impacts longevity
+When simulating variable lead impedance (Extended scenario), mean device longevity slightly decreased compared to the base scenario. The absolute difference in mean longevity was approximately 0.07 years (~26 days) A t-test confirmed that the difference in mean longevity was statistically significant (p < 10^(-10)), demonstrating that lead characteristics can meaningfully affect outcomes in terms of longevity. In addition, increasing lead impedance to 1000 Ohms resulted in a substantial shift in projected longevity, with a mean increase of approximately 1.1 years compared with the base scenario. This effect was highly statistically significant (p < 2 × 10^(-16)). This effect represents a clinically meaningful improvement in device longevity.
+
+
+### CONCLUSION
+
+Our Monte Carlo model successfully recreated key elements of the PCI-based longevity estimation introduced by Defaye et al. (2025) while extending the original framework to examine the impact of lead impedance magnitude. Despite using fewer device-specific parameters and a simplified representation of programming options, our simulated findings closely reflected the patterns reported in the original study. 
+While the addition of our extended scenario ((N(500,100)Ohms) provided some meaningful difference, the addition of a high-impedance (1000 Ohms) scenario provided an important extension to the existing model. While normal physiological variability in impedance produced some differences in longevity, higher impedance values resulted in a pronounced increase in projected device life. This finding reinforces the relevance of lead design choices in addition to programming and battery characteristics.
+
+These findings reinforce the use of the PCI as a standardized and adaptable framework for understanding and comparing device life under varying patient and device conditions.
+
+The alignment of our simulation and the published results support the idea that even approximate PCI-based modeling can produce meaningful insights into device longevity. As in the original study, our results highlight meaningful practical implications. Even in a simplified form, our recreation demonstrates the impact and accuracy of the PCI model and shows the value it brings to real-world scenarios. 
+
+### REFERENCES 
+
+Defaye, P., Boveda, S., Billuart, J.-R., Witte, K. K., & Paton, M. F. (2025). Cardiac implantable electronic devices’ longevity: A novel modelling tool for estimation and comparison. PLOS ONE, 20(9), e0333195. https://doi.org/10.1371/journal.pone.0333195
+
